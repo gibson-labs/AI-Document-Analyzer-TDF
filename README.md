@@ -11,4 +11,4 @@ python -m venv .venv
  ```
 3. Create a directory called `files` and add all files to it.
 4. Install all the necessary software for Unstructured (document processor). [Go](https://docs.unstructured.io/open-source/installation/full-installation)
-5. 
+5. Create a `.env` file and put necessary secrets in. 
