@@ -12,13 +12,14 @@ from langchain.agents import create_agent
 from pydantic import BaseModel, Field
 import asyncio
 import base64
+from langchain_core.messages import HumanMessage
 
 load_dotenv()
 
 class HTMLTable(BaseModel):
     html_table: str = Field(description="A raw HTML table rendering of the text with no formatting.")
 
-llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 table_agent_prompt = """
 # Role
@@ -130,6 +131,7 @@ image_description_agent = create_agent(llm,
 class State(TypedDict):
     file_path: str
     elements: List[Element]
+    image_text: str
     chunks: dict
     embeddings: dict
 
@@ -148,6 +150,7 @@ class State(TypedDict):
 # - Find if needs to be processed or not
 
 images = [".png", ".heic", ".jpg"]
+
 
 def determine_file_type(state: State) -> Literal["pdf", "xlsx", "image", "other"]:
     path = state["file_path"]
@@ -195,6 +198,70 @@ def extract_xlsx(state: State) -> State:
 
     return {"elements": elements}
 
+
+def extract_image(state: State) -> State:
+    elements = partition_image(filename=state["file_path"], strategy="hi_res")
+
+    return {"elements": elements}
+
+# ... existing imports ...
+
+async def describe_extracted_images_async(state: State) -> State:
+    elements = state["elements"]
+    
+    # Filter for Image elements that have a valid image path in metadata
+    image_items = []
+    for idx, el in enumerate(elements):
+        if getattr(el, "category", None) == "Image":
+            # Unstructured saves the path in metadata.image_path
+            image_path = getattr(el.metadata, "image_path", None)
+            if image_path and os.path.exists(image_path):
+                image_items.append((idx, el, image_path))
+
+    if not image_items:
+        return {"elements": elements}
+
+    print(f"Generating descriptions for {len(image_items)} extracted images...")
+
+    # Prepare batch prompts
+    prompts = []
+    for _, _, path in image_items:
+        b64_image = image_to_base64(path).decode('utf-8')
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": "Describe this image for retrieval purposes:"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+            ]
+        )
+        prompts.append({"messages": [message]})
+
+    # Run concurrently (adjust max_concurrency as needed)
+    responses = await image_description_agent.abatch(prompts, config={"max_concurrency": 20})
+
+    # Update elements with the generated description
+    for (idx, el, _), resp in zip(image_items, responses):
+        description = resp["messages"][-1].content
+        # Update the element's text so it gets embedded later
+        el.text = f"[Image Description: {description}]"
+        elements[idx] = el
+
+    for (idx, el, path), resp in zip(image_items, responses):
+        description = resp["messages"][-1].content
+        el.text = f"[Image Description: {description}]"
+        elements[idx] = el
+        
+        # CLEANUP: Remove the image file after processing to save space
+        try:
+            os.remove(path)
+        except OSError:
+            pass # Handle edge cases where file is already gone
+
+    return {"elements": elements}
+
+def describe_extracted_images(state: State) -> State:
+    return asyncio.run(describe_extracted_images_async(state))
+
+
 def image_to_base64(filepath: str) -> bytes:
     """
     Read an image file and return a base64-encoded string.
@@ -202,15 +269,14 @@ def image_to_base64(filepath: str) -> bytes:
     with open(filepath, "rb") as f:
         img_bytes = f.read()
     b64_bytes = base64.b64encode(img_bytes)
-    # Convert bytes -> utf-8 string
+
     return b64_bytes
+
 
 def describe_image(state: State) -> State:
 
     b64_image = image_to_base64(state["file_path"])
     image_string = b64_image.decode('utf-8')
-
-    print(image_string)
 
     message = {
         "role": "user",
@@ -229,12 +295,7 @@ def describe_image(state: State) -> State:
 
     result = image_description_agent.invoke({"messages": message})
 
-    return {"output": result["messages"][-1].content}
-
-def extract_image(state: State) -> State:
-    elements = partition_image(filename=state["file_path"], strategy="hi_res")
-
-    return {"elements": elements}
+    return {"image_text": result["messages"][-1].content}
 
 
 async def create_html_table_async(state: State) -> State:
@@ -249,13 +310,14 @@ async def create_html_table_async(state: State) -> State:
     ]
 
     # Runs calls concurrently; tune max_concurrency to stay under rate limits
-    responses = await table_agent.abatch(prompts, config={"max_concurrency": 5})
+    responses = await table_agent.abatch(prompts, config={"max_concurrency": 20})
 
     for (idx, el), resp in zip(table_items, responses):
         el.text = resp["structured_response"].html_table
         elements[idx] = el
 
     return {"elements": elements}
+
 
 def create_html_table(state: State) -> State:
     return asyncio.run(create_html_table_async(state))
@@ -264,8 +326,10 @@ def create_html_table(state: State) -> State:
 def remove_unecessary_metadata() -> State:
     return None
 
+
 def chunk() -> State:
     return None
+
 
 def embed() -> State:
     return None
@@ -275,8 +339,6 @@ def embed() -> State:
 # 3. (Optional) Use Claude OCR for cleanup
 # 4. Create HTML tables for tables
 
-
-
 builder = StateGraph(State)
 
 builder.add_node("extract_pdf", extract_pdf)
@@ -284,9 +346,7 @@ builder.add_node("extract_xlsx", extract_xlsx)
 builder.add_node("extract_image", extract_image)
 builder.add_node("describe_image", describe_image)
 builder.add_node("create_html_table", create_html_table)
-# builder.add_node("remove_unecessary_metadata", remove_unecessary_metadata)
-# builder.add_node("chunk", chunk)
-# builder.add_node("embed", embed)
+builder.add_node("describe_extracted_images", describe_extracted_images)
 
 builder.add_conditional_edges(START, 
                                 determine_file_type, 
@@ -298,25 +358,53 @@ builder.add_conditional_edges(START,
                                 }
                             )
 
-builder.add_edge("extract_pdf", "create_html_table")
-builder.add_edge("extract_xlsx", "create_html_table")
+builder.add_edge("extract_pdf", "describe_extracted_images")
+builder.add_edge("extract_xlsx", "describe_extracted_images")
+
+# After describing images, we can move to table creation
+builder.add_edge("describe_extracted_images", "create_html_table")
+
 builder.add_edge("extract_image", "create_html_table")
 
-builder.add_edge("create_html_table", END)
+builder.add_edge("create_html_table", "describe_image")
 
-# builder.add_edge("describe_image", END)
-
-
-# builder.add_edge("create_html_table", "describe_image")
-# builder.add_edge("describe_image", "remove_unecessary_metadata")
-# builder.add_edge("remove_unecessary_metadata", "chunk")
-# builder.add_edge("chunk", "embed")
-# builder.add_edge("embed", END)
+builder.add_edge("describe_image", END)
 
 workflow = builder.compile()
 
-state: State = workflow.invoke({"file_path": "./files/Schedule A.pdf"})
-elements = state["elements"]
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
-for element in elements:
-    print(element.__dict__)
+# 2. Join it with your target folder name
+# This assumes the "files" folder is inside the "document_loader" folder alongside main.py
+input_directory = os.path.join(script_dir, "..", "files")
+
+# Verify the directory exists
+if os.path.exists(input_directory):
+    # Iterate over every entry in the directory
+    for filename in os.listdir(input_directory):
+        file_path = os.path.join(input_directory, filename)
+        
+        # Ensure we are processing a file, not a subdirectory
+        if os.path.isfile(file_path):
+            print(f"\n--- Processing: {filename} ---")
+            
+            try:
+                # Invoke the workflow for the current file path
+                state = workflow.invoke({"file_path": file_path})
+                
+                # Check if elements were successfully extracted
+                if "elements" in state:
+                    elements = state["elements"]
+                    print(f"Successfully processed {filename}. Extracted {len(elements)} elements.")
+                    
+                    # Print element details (optional)
+                    for element in elements:
+                        print(element.__dict__)
+                else:
+                    # Handle cases where the file type was 'other' or skipped
+                    print(f"Skipped {filename}: No elements extracted or unsupported file type.")
+                    
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
+else:
+    print(f"Directory '{input_directory}' not found. Please create it and add files.")
