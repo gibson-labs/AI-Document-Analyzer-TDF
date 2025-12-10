@@ -207,6 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 files/
-.gradio/
 documents/
 chroma/
+
+*.db
+workflow_graph.png 
+.gradio
