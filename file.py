@@ -179,6 +179,11 @@ def load_docs(paths: List[str]) -> List[Any]:
 def build_vectorstore(docs: List[Any], persist_dir: str) -> Any:
     splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
     splits = splitter.split_documents(docs)
+    splits = [s for s in splits if hasattr(s, 'page_content') and s.page_content.strip()]
+    
+    if not splits:
+        raise ValueError("Document splitting resulted in no content. Check that documents contain readable text.")
+    
     embeddings = OpenAIEmbeddings()
     vectordb = Chroma.from_documents(splits, embedding=embeddings, persist_directory=persist_dir)
     # Note: Chroma 0.4.x+ automatically persists, no need to call persist()
@@ -210,6 +215,37 @@ def make_rag_prompt() -> Any:
                 "Using only the context below, complete the task.\n\n"
                 "Context:\n{context}\n\n"
                 "Task:\n{task}"
+            ),
+        ),
+    ])
+
+
+def make_chatbot_prompt() -> Any:
+    """Create a conversational prompt for chatbot mode that's more natural and interactive."""
+    return ChatPromptTemplate.from_messages([
+        (
+            "system",
+            (
+                "You are a helpful and knowledgeable credit risk analysis assistant. You help users "
+                "understand risk factors, financial metrics, compliance issues, and other aspects "
+                "of company documents through natural conversation.\n\n"
+                "Guidelines:\n"
+                "- Answer questions clearly and conversationally\n"
+                "- Cite specific sources (filename and page/row) when referencing documents\n"
+                "- If you don't know something from the context, say so\n"
+                "- You can ask clarifying questions if needed\n"
+                "- Be professional but friendly in tone\n"
+                "- When discussing risks or financial metrics, provide context and explain significance"
+            ),
+        ),
+        (
+            "human",
+            (
+                "Context from documents:\n{context}\n\n"
+                "Conversation history:\n{history}\n\n"
+                "User question: {question}\n\n"
+                "Please provide a helpful answer based on the context above. If the question refers "
+                "to previous conversation, use the history to provide context-aware responses."
             ),
         ),
     ])
@@ -253,6 +289,60 @@ def rag_answer(query: str, vectordb: Any, prompt: Any, llm: Any, pre_summary: st
         "and an approve/decline recommendation with rationale."
     )
     resp = chain.invoke({"context": context, "task": task})
+    return getattr(resp, "content", str(resp))
+
+
+def general_chat_answer(question: str, llm: Any, conversation_history: List[Tuple[str, str]] = None) -> str:
+    """Answer a question without document context."""
+    if conversation_history is None:
+        conversation_history = []
+    
+    history_str = ""
+    if conversation_history:
+        for user_msg, assistant_msg in conversation_history[-5:]:
+            history_str += f"User: {user_msg}\nAssistant: {assistant_msg}\n"
+    else:
+        history_str = "No previous conversation."
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant. Answer questions clearly and conversationally."),
+        ("human", "Conversation history:\n{history}\n\nUser question: {question}"),
+    ])
+    
+    chain = prompt | llm
+    resp = chain.invoke({"history": history_str, "question": question})
+    return getattr(resp, "content", str(resp))
+
+
+def chatbot_answer(question: str, vectordb: Any, llm: Any, conversation_history: List[Tuple[str, str]] = None, pre_summary: str = "", company: str = "Target Company") -> str:
+    """Answer a question using RAG with conversation history."""
+    if conversation_history is None:
+        conversation_history = []
+    
+    history_str = ""
+    if conversation_history:
+        for user_msg, assistant_msg in conversation_history[-5:]:
+            history_str += f"User: {user_msg}\nAssistant: {assistant_msg}\n"
+    else:
+        history_str = "No previous conversation."
+    
+    retriever = vectordb.as_retriever(search_type="mmr", search_kwargs={"k": 8})
+    context_docs = retriever.invoke(question)
+    context_blocks = []
+    
+    if pre_summary:
+        context_blocks.append(f"Pre-summary (from summarizer):\n{pre_summary}\n")
+    
+    for d in context_docs:
+        src = d.metadata.get("source", "unknown") if hasattr(d, "metadata") else "unknown"
+        page = d.metadata.get("page", None) if hasattr(d, "metadata") else None
+        page_note = f" (page {page})" if page is not None else ""
+        context_blocks.append(f"Source: {src}{page_note}\n{d.page_content}\n")
+    
+    context = "\n---\n".join(context_blocks)
+    prompt = make_chatbot_prompt()
+    chain = prompt | llm
+    resp = chain.invoke({"context": context, "history": history_str, "question": question})
     return getattr(resp, "content", str(resp))
 
 
