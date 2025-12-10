@@ -207,6 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 files/
+documents/
+chroma/
 
 *.db
 workflow_graph.png 
