@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -15,12 +15,15 @@ from file import (
     parse_decision_matrix,
     rag_weighted_analysis,
     fedex_review_analysis,
+    chatbot_answer,
+    general_chat_answer,
 )
 
 
 # Initialization (lazy build on first request to keep startup fast)
 _state: Dict[str, Any] = {
     "vectordb": None,
+    "chatbot_history": {},  # Store conversation history per session
 }
 
 
@@ -76,6 +79,74 @@ def do_fedex_review(company: str, docs_dir: str, persist_dir: str, summarizer_sp
     return fedex_review_analysis(company, vectordb, analyzer_llm, pre_summary=pre_summary, criteria_weights=criteria_weights)
 
 
+def do_chatbot(
+    message: str,
+    history: List,
+    company: str,
+    docs_dir: str,
+    persist_dir: str,
+    summarizer_spec: str,
+    analyzer_spec: str,
+) -> Tuple[List, str]:
+    """Handle chatbot conversation with history.
+    
+    Returns:
+        Tuple of (updated_history, empty_string) for Gradio Chatbot component
+    """
+    if not message or not message.strip():
+        return history or [], ""
+    
+    if history is None:
+        history = []
+    
+    try:
+        analyzer_llm = make_llm_from_spec(analyzer_spec or None, default_openai_model="gpt-4o-mini")
+        
+        # Try to use documents if available, otherwise use general chat
+        try:
+            vectordb = ensure_index(docs_dir, persist_dir)
+            pre_summary = ""
+            if summarizer_spec:
+                pre_summary = summarize_corpus(company, vectordb, make_llm_from_spec(summarizer_spec, default_openai_model="gpt-4o-mini"))
+            
+            # Convert history to internal format [(user, bot), ...]
+            conversation_history = []
+            if history:
+                for h in history:
+                    if isinstance(h, (list, tuple)) and len(h) == 2:
+                        conversation_history.append((h[0], h[1]))
+            
+            response = chatbot_answer(
+                question=message,
+                vectordb=vectordb,
+                llm=analyzer_llm,
+                conversation_history=conversation_history,
+                pre_summary=pre_summary,
+                company=company,
+            )
+        except RuntimeError:
+            # No documents available - use general chat
+            conversation_history = []
+            if history:
+                for h in history:
+                    if isinstance(h, (list, tuple)) and len(h) == 2:
+                        conversation_history.append((h[0], h[1]))
+            
+            response = general_chat_answer(
+                question=message,
+                llm=analyzer_llm,
+                conversation_history=conversation_history,
+            )
+        
+        # Update history: Gradio Chatbot expects list of tuples [(user, bot), ...]
+        history.append((message, response))
+        return history, ""
+    except Exception as e:
+        error_msg = f"Error: {str(e)}\n\nTroubleshooting:\n- Check if OPENAI_API_KEY is set in .env file\n- Verify documents directory exists: {docs_dir}\n- Ensure documents are in the specified directory"
+        history.append((message, error_msg))
+        return history, ""
+
+
 def build_app() -> gr.Blocks:
     load_dotenv('/Users/johngibson/Documents/College/Fall 2025/Ai and Agentic/.env')
 
@@ -106,6 +177,38 @@ def build_app() -> gr.Blocks:
             qa_out = gr.Textbox(label="Answer", lines=18)
             qa_btn = gr.Button("Search and Answer")
             qa_btn.click(do_question, inputs=[company, question, docs_dir, persist_dir, summarizer, analyzer], outputs=qa_out)
+        
+        with gr.Tab("Chatbot"):
+            gr.Markdown("""
+            ### Conversational Assistant
+            Ask questions about the documents. The chatbot remembers 
+            previous messages in this session, so you can ask follow-up questions.
+            """)
+            chatbot = gr.Chatbot(label="Conversation", height=500)
+            with gr.Row():
+                chatbot_msg = gr.Textbox(
+                    label="Your message",
+                    placeholder="Ask a question about the documents...",
+                    lines=2,
+                    show_label=False,
+                    scale=4,
+                    container=False
+                )
+                chatbot_submit_btn = gr.Button("Send", variant="primary", scale=1)
+            chatbot_clear = gr.Button("Clear Conversation", variant="secondary")
+            
+            chatbot_msg.submit(
+                do_chatbot,
+                inputs=[chatbot_msg, chatbot, company, docs_dir, persist_dir, summarizer, analyzer],
+                outputs=[chatbot, chatbot_msg]
+            )
+            chatbot_submit_btn.click(
+                do_chatbot,
+                inputs=[chatbot_msg, chatbot, company, docs_dir, persist_dir, summarizer, analyzer],
+                outputs=[chatbot, chatbot_msg]
+            )
+            
+            chatbot_clear.click(lambda: [], outputs=[chatbot])
         
         with gr.Tab("FedEx Review"):
             criteria_path = gr.Textbox(label="Optional Criteria Matrix (.xlsx)", value=os.path.join(default_docs, "Decision Matrix's.xlsx"))
