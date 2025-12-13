@@ -17,10 +17,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuration ---
-DB_PATH = "extracted_data.db"
-AWS_REGION = "us-west-2"
-AWS_PROFILE = "806817393652_AdministratorAccess"  # Update this or use environment variables
+# --- Configuration from Environment Variables ---
+
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
+DB_PATH = os.getenv("DB_PATH", "extracted_data.db")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """You are an expert SQL Data Architect specialized in Entity Resolution and Schema Normalization.
@@ -105,8 +108,15 @@ def process_document_with_textract(filepath: str):
     Handles multi-page PDFs by processing one page at a time.
     """
     try:
-        session = boto3.Session(profile_name=AWS_PROFILE)
-        client = session.client('textract', region_name=AWS_REGION)
+        session_kwargs = {"region_name": AWS_REGION}
+        if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+            session_kwargs.update(
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            )
+
+        session = boto3.Session(**session_kwargs)
+        client = session.client('textract')
         
         extracted_content = []
         
@@ -220,7 +230,7 @@ tools = [
 # 1. Bind tools to the model
 # Switch to gpt-4o-mini for better rate limits and cost efficiency
 # Added max_retries=5 to handle 429 errors automatically
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=5)
+llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, max_retries=5)
 model_with_tools = llm.bind_tools(tools)
 
 # 2. Define the Nodes
@@ -318,7 +328,7 @@ def process_folder(folder_path: str):
     print("\n--- Ingestion Complete ---")
 
 if __name__ == "__main__":
-    target_folder = "../files"
+    target_folder = "./files"
 
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
