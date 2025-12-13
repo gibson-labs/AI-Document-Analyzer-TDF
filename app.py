@@ -102,6 +102,24 @@ def do_chatbot(
     try:
         analyzer_llm = make_llm_from_spec(analyzer_spec or None, default_openai_model="gpt-4o-mini")
         
+        # Check if message is a simple greeting/small talk (skip document processing)
+        simple_greetings = ["hello", "hi", "hey", "greetings", "good morning", "good afternoon", 
+                           "good evening", "how are you", "what's up", "thanks", "thank you"]
+        message_lower = message.lower().strip()
+        is_simple_greeting = any(greeting in message_lower for greeting in simple_greetings) and len(message.split()) <= 5
+        
+        # For simple greetings or if no history and short message, use general chat (faster)
+        if is_simple_greeting and not history:
+            conversation_history = []
+            response = general_chat_answer(
+                question=message,
+                llm=analyzer_llm,
+                conversation_history=conversation_history,
+            )
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": response})
+            return history, ""
+        
         # Try to use documents if available, otherwise use general chat
         try:
             vectordb = ensure_index(docs_dir, persist_dir)
@@ -111,9 +129,17 @@ def do_chatbot(
             
             # Convert history to internal format [(user, bot), ...]
             conversation_history = []
+            user_msg = None
             if history:
                 for h in history:
-                    if isinstance(h, (list, tuple)) and len(h) == 2:
+                    if isinstance(h, dict):
+                        # Messages format: {"role": "user", "content": "..."}
+                        if h.get("role") == "user":
+                            user_msg = h.get("content", "")
+                        elif h.get("role") == "assistant" and user_msg:
+                            conversation_history.append((user_msg, h.get("content", "")))
+                            user_msg = None
+                    elif isinstance(h, (list, tuple)) and len(h) == 2:
                         conversation_history.append((h[0], h[1]))
             
             response = chatbot_answer(
@@ -127,9 +153,16 @@ def do_chatbot(
         except RuntimeError:
             # No documents available - use general chat
             conversation_history = []
+            user_msg = None
             if history:
                 for h in history:
-                    if isinstance(h, (list, tuple)) and len(h) == 2:
+                    if isinstance(h, dict):
+                        if h.get("role") == "user":
+                            user_msg = h.get("content", "")
+                        elif h.get("role") == "assistant" and user_msg:
+                            conversation_history.append((user_msg, h.get("content", "")))
+                            user_msg = None
+                    elif isinstance(h, (list, tuple)) and len(h) == 2:
                         conversation_history.append((h[0], h[1]))
             
             response = general_chat_answer(
@@ -138,19 +171,55 @@ def do_chatbot(
                 conversation_history=conversation_history,
             )
         
-        # Update history: Gradio Chatbot expects list of tuples [(user, bot), ...]
-        history.append((message, response))
+        # Update history: Gradio Chatbot expects messages format [{"role": "user", "content": "..."}, ...]
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response})
         return history, ""
     except Exception as e:
-        error_msg = f"Error: {str(e)}\n\nTroubleshooting:\n- Check if OPENAI_API_KEY is set in .env file\n- Verify documents directory exists: {docs_dir}\n- Ensure documents are in the specified directory"
-        history.append((message, error_msg))
+        error_str = str(e)
+        # Provide specific guidance for common errors
+        if "quota" in error_str.lower() or "429" in error_str or "insufficient_quota" in error_str:
+            error_msg = (
+                f"OpenAI API Quota Error: {error_str}\n\n"
+                "Solutions:\n"
+                "1. Check your OpenAI account billing: https://platform.openai.com/account/billing\n"
+                "2. Add payment method or upgrade your plan\n"
+                "3. Wait for your quota to reset (usually monthly)\n"
+                "4. Use a different API key if available\n"
+                "5. Switch to Ollama for local models (set analyzer to 'ollama:llama3' in Settings)"
+            )
+        elif "api key" in error_str.lower() or "authentication" in error_str.lower():
+            error_msg = (
+                f"API Key Error: {error_str}\n\n"
+                "Troubleshooting:\n"
+                "- Check if OPENAI_API_KEY is set in .env file\n"
+                "- Verify the API key is valid and not expired\n"
+                "- Ensure the .env file is in the project root directory"
+            )
+        else:
+            error_msg = (
+                f"Error: {error_str}\n\n"
+                "Troubleshooting:\n"
+                "- Check if OPENAI_API_KEY is set in .env file\n"
+                "- Verify documents directory exists: {docs_dir}\n"
+                "- Ensure documents are in the specified directory\n"
+                "- Check OpenAI API status: https://status.openai.com"
+            )
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": error_msg})
         return history, ""
 
 
 def build_app() -> gr.Blocks:
-    load_dotenv('/Users/johngibson/Documents/College/Fall 2025/Ai and Agentic/.env')
+    # Try to load .env from project root, fallback to absolute path if needed
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    else:
+        # Fallback: try to load from environment variable or default location
+        load_dotenv()
 
-    default_docs = os.path.join(os.path.dirname(__file__), "documents")
+    default_docs = os.path.join(os.path.dirname(__file__), "document_loader")
     default_persist = os.path.join(os.path.dirname(__file__), "chroma")
 
     with gr.Blocks(title="Risk Analysis Assistant") as demo:

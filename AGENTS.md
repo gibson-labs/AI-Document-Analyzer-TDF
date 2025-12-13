@@ -4,14 +4,14 @@ Use this guide when extending the TDF Risk Analysis assistant so every contribut
 ## Project Structure & Module Organization
 - `file.py` orchestrates ingestion, LangChain pipelines, and the weighted analysis CLI; extend or refactor RAG helpers here so the CLI stays the definitive entry point.
 - `app.py` hosts the Gradio UI that calls the same helpers; whenever you add a CLI capability, expose matching controls in the UI to keep surfaces aligned.
-- `documents/` houses sample PDFs, spreadsheets, and JPGs; `chroma/` keeps the persisted vector DB (delete to rebuild, never hand-edit). `.env` stores `OPENAI_API_KEY` and must stay local-only.
+- `document_loader/` houses sample PDFs, spreadsheets, and JPGs; `chroma/` keeps the persisted vector DB (delete to rebuild, never hand-edit). `.env` stores `OPENAI_API_KEY` and must stay local-only.
 
 ## Build, Test, and Development Commands
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python file.py --mode fedex --docs_dir documents --persist_dir chroma --company "Acme" --decision_matrix "documents/Decision Matrix's.xlsx" --rebuild_index
-python file.py --mode weighted --decision_matrix "documents/Decision Matrix's.xlsx" --company "Acme"
+python file.py --mode fedex --docs_dir document_loader --persist_dir chroma --company "Acme" --decision_matrix "document_loader/Decision Matrix's.xlsx" --rebuild_index
+python file.py --mode weighted --decision_matrix "document_loader/Decision Matrix's.xlsx" --company "Acme"
 python file.py --mode memo --company "Acme"
 python app.py
 ```
@@ -25,7 +25,7 @@ Set `OPENAI_API_KEY` via `.env` or `export` before any run; use `--mode fedex` f
 
 ## Testing Guidelines
 - No automated suite exists yet; run the CLI twice (with and without `--rebuild_index`) in both FedEx and weighted modes to verify fresh-build vs cached flows, and save console output for reviewers.
-- Exercise each Gradio tab (Summarize, Q&A, FedEx Review, Weighted Analysis) after backend changes and capture representative summaries/scores; when editing decision-matrix code, keep a disposable XLSX in `documents/` only for local validation.
+- Exercise each Gradio tab (Summarize, Q&A, FedEx Review, Weighted Analysis) after backend changes and capture representative summaries/scores; when editing decision-matrix code, keep a disposable XLSX in `document_loader/` only for local validation.
 
 ## Commit & Pull Request Guidelines
 - The repo currently lacks visible Git history, so use an imperative Conventional Commit subject (e.g., `feat: add weighted scoring summaries`) and describe scope + reasoning in the body.
