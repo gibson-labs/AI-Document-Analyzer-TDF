@@ -1,9 +1,8 @@
 import base64
-import operator
 import io
+import operator
 import os
-import mimetypes
-from typing import List, Annotated, TypedDict, Literal
+from typing import Annotated, Dict, List, NotRequired, TypedDict
 from pdf2image import convert_from_path
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -12,6 +11,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END, START
 from langgraph.constants import Send
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Configuration ---
 MODEL_NAME = "gpt-5-mini"
@@ -42,6 +44,7 @@ class AgentState(TypedDict):
     
     # Output (Reducer)
     results: Annotated[List[dict], operator.add]
+    grouped_results: NotRequired[Dict[str, List[dict]]]
 
 # --- 2. Helper Functions ---
 
@@ -176,7 +179,7 @@ def aggregator_node(state: AgentState):
     for fname in grouped:
         grouped[fname].sort(key=lambda x: x['page'])
         
-    return {"results": grouped}
+    return {"grouped_results": grouped}
 
 # --- 4. Edge Logic ---
 
@@ -214,13 +217,14 @@ app = workflow.compile()
 
 if __name__ == "__main__":
     # Create a dummy folder for testing if needed
-    target_folder = "./documents_to_analyze"
+    target_folder = "./files"
     
     if os.path.exists(target_folder):
         final_state = app.invoke({"folder_path": target_folder})
         
         # Display Results
         import json
-        print(json.dumps(final_state['results'], indent=2))
+        output = final_state.get("grouped_results", final_state.get("results", {}))
+        print(json.dumps(output, indent=2))
     else:
         print(f"Please create the folder '{target_folder}' and put some PDFs/Images in it.")
