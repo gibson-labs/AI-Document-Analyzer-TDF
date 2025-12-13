@@ -17,10 +17,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuration ---
-DB_PATH = "extracted_data.db"
-AWS_REGION = "us-west-2"
-AWS_PROFILE = "806817393652_AdministratorAccess"  # Update this or use environment variables
+# --- Configuration from Environment Variables ---
+# Create a .env file in your project root and add these variables.
+# Example:
+# AWS_PROFILE="your-aws-profile-name"
+# AWS_REGION="us-east-1"
+# DB_PATH="data/my_database.db"
+# OPENAI_MODEL="gpt-4o-mini"
+
+AWS_PROFILE = os.getenv("AWS_PROFILE") # Can be None if using default credentials
+AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
+DB_PATH = os.getenv("DB_PATH", "extracted_data.db")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """You are an expert SQL Data Architect specialized in Entity Resolution and Schema Normalization.
@@ -220,7 +228,7 @@ tools = [
 # 1. Bind tools to the model
 # Switch to gpt-4o-mini for better rate limits and cost efficiency
 # Added max_retries=5 to handle 429 errors automatically
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=5)
+llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, max_retries=5)
 model_with_tools = llm.bind_tools(tools)
 
 # 2. Define the Nodes
@@ -318,7 +326,7 @@ def process_folder(folder_path: str):
     print("\n--- Ingestion Complete ---")
 
 if __name__ == "__main__":
-    target_folder = "../files"
+    target_folder = "./files"
 
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
