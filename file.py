@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredImageLoader
-from langchain_community.document_loaders import UnstructuredExcelLoader
+from langchain_community.document_loaders import UnstructuredExcelLoader, UnstructuredFileLoader
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
 from dotenv import load_dotenv
@@ -147,8 +147,36 @@ def load_docs(paths: List[str]) -> List[Any]:
     for path in paths:
         ext = os.path.splitext(path)[1].lower()
         if ext == ".pdf":
-            loader = PyPDFLoader(path)
-            docs.extend(loader.load())
+            # Try PyPDFLoader first (fast for text-based PDFs)
+            try:
+                loader = PyPDFLoader(path)
+                pdf_docs = loader.load()
+                # Check if we got any content
+                has_content = any(hasattr(d, 'page_content') and d.page_content.strip() for d in pdf_docs)
+                if has_content:
+                    docs.extend(pdf_docs)
+                else:
+                    # Fall back to UnstructuredFileLoader for OCR (slower but handles image-based PDFs)
+                    print(f"PDF {os.path.basename(path)} appears to be image-based, using OCR extraction...")
+                    try:
+                        loader = UnstructuredFileLoader(path, strategy="hi_res")
+                        pdf_docs = loader.load()
+                        docs.extend(pdf_docs)
+                        print(f"Successfully extracted text from {os.path.basename(path)} using OCR")
+                    except Exception as ocr_error:
+                        print(f"Warning: OCR extraction failed for {os.path.basename(path)}: {ocr_error}")
+                        # Still add empty docs to maintain structure, but they'll be filtered later
+                        docs.extend(pdf_docs)
+            except Exception as e:
+                print(f"Error loading PDF {os.path.basename(path)}: {e}")
+                # Try UnstructuredFileLoader as fallback
+                try:
+                    print(f"Attempting OCR extraction for {os.path.basename(path)}...")
+                    loader = UnstructuredFileLoader(path, strategy="hi_res")
+                    pdf_docs = loader.load()
+                    docs.extend(pdf_docs)
+                except Exception as fallback_error:
+                    print(f"Failed to load {os.path.basename(path)} with both methods: {fallback_error}")
         elif ext in {".jpg", ".jpeg", ".png"}:
             try:
                 loader = UnstructuredImageLoader(path)
@@ -177,17 +205,54 @@ def load_docs(paths: List[str]) -> List[Any]:
 
 
 def build_vectorstore(docs: List[Any], persist_dir: str) -> Any:
+    if not docs:
+        raise ValueError("No documents provided to build vectorstore. Please ensure documents are loaded correctly.")
+    
+    # Check if documents have content
+    docs_with_content = [d for d in docs if hasattr(d, 'page_content') and d.page_content.strip()]
+    if not docs_with_content:
+        raise ValueError(
+            "All documents appear to be empty or could not be parsed. "
+            "Please check that your documents are valid and contain readable content."
+        )
+    
     splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
-    splits = splitter.split_documents(docs)
+    splits = splitter.split_documents(docs_with_content)
+    
+    # Filter out empty splits
     splits = [s for s in splits if hasattr(s, 'page_content') and s.page_content.strip()]
     
     if not splits:
-        raise ValueError("Document splitting resulted in no content. Check that documents contain readable text.")
+        raise ValueError(
+            "Document splitting resulted in no content. This may indicate:\n"
+            "- Documents are empty or corrupted\n"
+            "- Text extraction failed\n"
+            "- Check that OPENAI_API_KEY is set for embedding generation"
+        )
     
-    embeddings = OpenAIEmbeddings()
-    vectordb = Chroma.from_documents(splits, embedding=embeddings, persist_directory=persist_dir)
-    # Note: Chroma 0.4.x+ automatically persists, no need to call persist()
-    return vectordb
+    # Check for OpenAI API key before attempting embeddings
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Please set it in your .env file or environment.\n"
+            "The vectorstore requires OpenAI embeddings to index your documents."
+        )
+    
+    try:
+        embeddings = OpenAIEmbeddings()
+        vectordb = Chroma.from_documents(splits, embedding=embeddings, persist_directory=persist_dir)
+        # Note: Chroma 0.4.x+ automatically persists, no need to call persist()
+        return vectordb
+    except Exception as e:
+        if "empty" in str(e).lower() or "[]" in str(e):
+            raise ValueError(
+                f"Failed to create embeddings: {str(e)}\n\n"
+                "This usually means:\n"
+                "- Documents were loaded but contain no extractable text\n"
+                "- OPENAI_API_KEY is invalid or missing\n"
+                "- Network issues preventing API calls\n\n"
+                "Please check your documents and API key configuration."
+            ) from e
+        raise
 
 
 def make_rag_prompt() -> Any:
@@ -292,40 +357,105 @@ def rag_answer(query: str, vectordb: Any, prompt: Any, llm: Any, pre_summary: st
     return getattr(resp, "content", str(resp))
 
 
-def general_chat_answer(question: str, llm: Any, conversation_history: List[Tuple[str, str]] = None) -> str:
-    """Answer a question without document context."""
+def general_chat_answer(
+    question: str,
+    llm: Any,
+    conversation_history: List[Tuple[str, str]] = None,
+) -> str:
+    """Answer a question in general chat mode without document context.
+    
+    Args:
+        question: The user's question
+        llm: The language model to use
+        conversation_history: List of (user_message, assistant_message) tuples
+    
+    Returns:
+        The assistant's response
+    """
     if conversation_history is None:
         conversation_history = []
     
+    # Build conversation history string
     history_str = ""
     if conversation_history:
-        for user_msg, assistant_msg in conversation_history[-5:]:
-            history_str += f"User: {user_msg}\nAssistant: {assistant_msg}\n"
+        history_lines = []
+        for user_msg, assistant_msg in conversation_history[-5:]:  # Last 5 exchanges for context
+            history_lines.append(f"User: {user_msg}")
+            history_lines.append(f"Assistant: {assistant_msg}")
+        history_str = "\n".join(history_lines)
     else:
         history_str = "No previous conversation."
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant. Answer questions clearly and conversationally."),
-        ("human", "Conversation history:\n{history}\n\nUser question: {question}"),
+    # Create a general chat prompt (no document context)
+    general_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            (
+                "You are a helpful and knowledgeable assistant. You can answer questions, "
+                "have conversations, and provide information on a wide variety of topics.\n\n"
+                "Guidelines:\n"
+                "- Answer questions clearly and conversationally\n"
+                "- Be helpful, friendly, and professional\n"
+                "- If you don't know something, say so\n"
+                "- You can ask clarifying questions if needed\n"
+                "- Use the conversation history to provide context-aware responses"
+            ),
+        ),
+        (
+            "human",
+            (
+                "Conversation history:\n{history}\n\n"
+                "User question: {question}\n\n"
+                "Please provide a helpful answer. If the question refers to previous conversation, "
+                "use the history to provide context-aware responses."
+            ),
+        ),
     ])
     
-    chain = prompt | llm
-    resp = chain.invoke({"history": history_str, "question": question})
+    chain = general_prompt | llm
+    resp = chain.invoke({
+        "history": history_str,
+        "question": question,
+    })
     return getattr(resp, "content", str(resp))
 
 
-def chatbot_answer(question: str, vectordb: Any, llm: Any, conversation_history: List[Tuple[str, str]] = None, pre_summary: str = "", company: str = "Target Company") -> str:
-    """Answer a question using RAG with conversation history."""
+def chatbot_answer(
+    question: str,
+    vectordb: Any,
+    llm: Any,
+    conversation_history: List[Tuple[str, str]] = None,
+    pre_summary: str = "",
+    company: str = "Target Company",
+) -> str:
+    """Answer a question in chatbot mode with conversation history support using RAG.
+    
+    Args:
+        question: The user's question
+        vectordb: The vector database
+        llm: The language model to use
+        conversation_history: List of (user_message, assistant_message) tuples
+        pre_summary: Optional pre-generated summary
+        company: Company name for context
+    
+    Returns:
+        The assistant's response
+    """
     if conversation_history is None:
         conversation_history = []
     
+    # Build conversation history string
     history_str = ""
     if conversation_history:
-        for user_msg, assistant_msg in conversation_history[-5:]:
-            history_str += f"User: {user_msg}\nAssistant: {assistant_msg}\n"
+        history_lines = []
+        for user_msg, assistant_msg in conversation_history[-5:]:  # Last 5 exchanges for context
+            history_lines.append(f"User: {user_msg}")
+            history_lines.append(f"Assistant: {assistant_msg}")
+        history_str = "\n".join(history_lines)
     else:
         history_str = "No previous conversation."
     
+    # Retrieve relevant context from documents
     retriever = vectordb.as_retriever(search_type="mmr", search_kwargs={"k": 8})
     context_docs = retriever.invoke(question)
     context_blocks = []
@@ -340,9 +470,15 @@ def chatbot_answer(question: str, vectordb: Any, llm: Any, conversation_history:
         context_blocks.append(f"Source: {src}{page_note}\n{d.page_content}\n")
     
     context = "\n---\n".join(context_blocks)
+    
+    # Use chatbot prompt with document context
     prompt = make_chatbot_prompt()
     chain = prompt | llm
-    resp = chain.invoke({"context": context, "history": history_str, "question": question})
+    resp = chain.invoke({
+        "context": context,
+        "history": history_str,
+        "question": question,
+    })
     return getattr(resp, "content", str(resp))
 
 
@@ -727,17 +863,22 @@ def interactive_mode(vectordb: Any, prompt: Any, llm: Any) -> None:
 
 def main() -> None:
     # Load variables from .env at project root
-    load_dotenv('/Users/johngibson/Documents/College/Fall 2025/Ai and Agentic/.env')
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    else:
+        # Fallback: try to load from environment variable or default location
+        load_dotenv()
     print(f"OPENAI_API_KEY loaded: {bool(os.getenv('OPENAI_API_KEY'))}")
 
     parser = argparse.ArgumentParser(description="Risk rank businesses from documents using LangChain + OpenAI (with optional multi-LLM support)")
-    parser.add_argument("--docs_dir", default=os.path.join(os.path.dirname(__file__), "documents"), help="Directory of documents to analyze")
+    parser.add_argument("--docs_dir", default=os.path.join(os.path.dirname(__file__), "document_loader"), help="Directory of documents to analyze")
     parser.add_argument("--persist_dir", default=os.path.join(os.path.dirname(__file__), "chroma"), help="Chroma persistence directory")
     parser.add_argument("--model", default="gpt-4o-mini", help="[DEPRECATED] OpenAI chat model name (use --analyzer instead)")
     parser.add_argument("--summarizer", default=None, help="Summarizer LLM spec, e.g., 'openai:gpt-4o-mini' or 'ollama:llama3'")
     parser.add_argument("--analyzer", default=None, help="Analyzer LLM spec, e.g., 'openai:gpt-4o-mini' or 'ollama:llama3'")
     parser.add_argument("--company", default="Target Company", help="Company name for analysis")
-    parser.add_argument("--decision_matrix", default=os.path.join(os.path.dirname(__file__), "documents", "Decision Matrix's.xlsx"), help="Path to Excel decision matrix for scoring")
+    parser.add_argument("--decision_matrix", default=os.path.join(os.path.dirname(__file__), "document_loader", "Decision Matrix's.xlsx"), help="Path to Excel decision matrix for scoring")
     parser.add_argument("--rebuild_index", action="store_true", help="Rebuild vector index from scratch")
     parser.add_argument("--interactive", action="store_true", help="Enter interactive Q&A mode")
     parser.add_argument("--question", help="Ask a single question about the documents")

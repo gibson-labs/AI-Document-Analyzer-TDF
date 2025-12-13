@@ -214,3 +214,5 @@ chroma/
 workflow_graph.png 
 .gradio
 extracted_text/
+.DS_Store
+
