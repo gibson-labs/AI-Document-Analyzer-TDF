@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
 
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     import boto3
@@ -18,18 +22,37 @@ try:
 except ImportError:
     PdfReader = None  # type: ignore
 
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
+
 SUPPORTED_FILE_EXTS = {".pdf", ".xlsx", ".png", ".jpg", ".jpeg"}
 DEFAULT_FILES_DIR = Path(__file__).resolve().parent / "files"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "extracted_text"
 
-# Lazily initialize Textract so environments without AWS creds do not crash on import.
-if boto3:
+
+def _build_textract_client():
+    """Initialize a Textract client using env credentials or AWS profile."""
+    if not boto3:
+        return None
+
+    session_kwargs = {"region_name": AWS_REGION}
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        session_kwargs.update(
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        )
+
     try:
-        textract_client = boto3.client("textract")
-    except Exception:
-        textract_client = None
-else:
-    textract_client = None
+        session = boto3.Session(**session_kwargs)
+        return session.client("textract")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Failed to initialize Textract client: {exc}")
+        return None
+
+
+# Lazily initialize Textract so environments without AWS creds do not crash on import.
+textract_client = _build_textract_client()
 
 
 def extract_with_textract(file_bytes: bytes, source_name: str) -> str:

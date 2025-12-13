@@ -18,14 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configuration from Environment Variables ---
-# Create a .env file in your project root and add these variables.
-# Example:
-# AWS_PROFILE="your-aws-profile-name"
-# AWS_REGION="us-east-1"
-# DB_PATH="data/my_database.db"
-# OPENAI_MODEL="gpt-4o-mini"
 
-AWS_PROFILE = os.getenv("AWS_PROFILE") # Can be None if using default credentials
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
 DB_PATH = os.getenv("DB_PATH", "extracted_data.db")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
@@ -113,8 +108,15 @@ def process_document_with_textract(filepath: str):
     Handles multi-page PDFs by processing one page at a time.
     """
     try:
-        session = boto3.Session(profile_name=AWS_PROFILE)
-        client = session.client('textract', region_name=AWS_REGION)
+        session_kwargs = {"region_name": AWS_REGION}
+        if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+            session_kwargs.update(
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            )
+
+        session = boto3.Session(**session_kwargs)
+        client = session.client('textract')
         
         extracted_content = []
         
