@@ -219,7 +219,7 @@ def build_app() -> gr.Blocks:
         # Fallback: try to load from environment variable or default location
         load_dotenv()
 
-    default_docs = os.path.join(os.path.dirname(__file__), "document_loader")
+    default_docs = os.path.join(os.path.dirname(__file__), "files")
     default_persist = os.path.join(os.path.dirname(__file__), "chroma")
 
     with gr.Blocks(title="Risk Analysis Assistant") as demo:
