@@ -2,6 +2,7 @@ import base64
 import io
 import operator
 import os
+from pathlib import Path
 from typing import Annotated, Dict, List, NotRequired, TypedDict
 from pdf2image import convert_from_path
 from PIL import Image
@@ -18,6 +19,7 @@ load_dotenv()
 # --- Configuration ---
 MODEL_NAME = "gpt-5-mini"
 VALID_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+VISION_OUTPUT_DIR = Path(__file__).resolve().parent / "extracted_text"
 
 # --- 1. Data Models (Schema) ---
 
@@ -45,6 +47,7 @@ class AgentState(TypedDict):
     # Output (Reducer)
     results: Annotated[List[dict], operator.add]
     grouped_results: NotRequired[Dict[str, List[dict]]]
+    written_files: NotRequired[List[str]]
 
 # --- 2. Helper Functions ---
 
@@ -56,6 +59,40 @@ def encode_pil_image(image_obj):
         image_obj = image_obj.convert("RGB")
     image_obj.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+def write_grouped_results(grouped_results: Dict[str, List[dict]], output_dir: Path = VISION_OUTPUT_DIR) -> List[str]:
+    """Persist grouped vision summaries to per-file text outputs."""
+    if not grouped_results:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written_paths = []
+
+    for fname, entries in grouped_results.items():
+        lines = []
+        for entry in entries:
+            page_label = f"Page {entry.get('page')}" if entry.get("page") is not None else "Page"
+            lines.append(page_label)
+
+            description = entry.get("description", "")
+            if description:
+                lines.append(description)
+
+            visual_types = entry.get("visual_types") or []
+            if visual_types:
+                lines.append(f"Visual types: {', '.join(visual_types)}")
+
+            confidence = entry.get("confidence")
+            if confidence is not None:
+                lines.append(f"Confidence: {confidence}")
+
+            lines.append("")  # spacer between pages
+
+        output_path = output_dir / f"{Path(fname).stem}-vision.txt"
+        output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        written_paths.append(str(output_path))
+
+    return written_paths
 
 # --- 3. Nodes ---
 
@@ -124,8 +161,9 @@ def vision_analyzer_node(state: AnalysisTask):
     
     # STRICT Prompt to ignore text
     system_prompt = (
-        "You are a Scientific Visual Analysis Agent. "
+        "You are a Business Diagram Analysis Agent. "
         "Your GOAL: Interpret charts, graphs, diagrams, and photos for a vector database. "
+        "Don't focus too much on how it looks, but rather the interpretation of what each diagram means."
         "RESTRICTION: IGNORE all body text, headlines, and standard data tables. "
         "If the image only contains text or simple tables, set 'has_relevant_visuals' to False."
     )
@@ -161,9 +199,7 @@ def vision_analyzer_node(state: AnalysisTask):
         return {"results": []}
 
 def aggregator_node(state: AgentState):
-    """
-    Groups results by document.
-    """
+    """Group results by document and persist them to per-file text outputs."""
     print("--- Aggregating Results ---")
     raw_results = state['results']
     
@@ -178,8 +214,9 @@ def aggregator_node(state: AgentState):
     # Sort pages within files
     for fname in grouped:
         grouped[fname].sort(key=lambda x: x['page'])
-        
-    return {"grouped_results": grouped}
+
+    written_files = write_grouped_results(grouped)
+    return {"grouped_results": grouped, "written_files": written_files}
 
 # --- 4. Edge Logic ---
 
@@ -226,5 +263,11 @@ if __name__ == "__main__":
         import json
         output = final_state.get("grouped_results", final_state.get("results", {}))
         print(json.dumps(output, indent=2))
+
+        written_files = final_state.get("written_files") or []
+        if written_files:
+            print("\nSaved vision summaries:")
+            for path in written_files:
+                print(f" - {path}")
     else:
         print(f"Please create the folder '{target_folder}' and put some PDFs/Images in it.")
