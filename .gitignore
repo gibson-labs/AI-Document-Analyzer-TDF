@@ -213,3 +213,4 @@ chroma/
 *.db
 workflow_graph.png 
 .gradio
+.DS_Store
