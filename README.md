@@ -11,7 +11,7 @@ Primary UX: React web app that lets you upload documents, run FedEx/Weighted/Mem
   - `AWS_ACCESS_KEY_ID`
   - `AWS_SECRET_ACCESS_KEY`
 
-### Run (Docker, recommended)
+### Run (Docker, recommended) 
 
 Docker builds install dependencies from `requirements.docker.txt` (kept smaller and more stable for container builds).
 
