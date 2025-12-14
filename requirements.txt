@@ -31,6 +31,7 @@ flatbuffers==25.9.23
 fonttools==4.60.1
 frozenlist==1.8.0
 fsspec==2025.10.0
+fastapi==0.116.1
 google-api-core==2.28.1
 google-auth==2.43.0
 google-cloud-vision==3.11.0
@@ -148,6 +149,7 @@ unstructured-client==0.42.4
 unstructured.pytesseract==0.3.15
 unstructured_inference==1.1.1
 urllib3==2.5.0
+uvicorn==0.35.0
 webencodings==0.5.1
 wrapt==2.0.1
 xlrd==2.0.2

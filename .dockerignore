@@ -1,0 +1,16 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+chroma/
+files/
+documents/
+extracted_text/
+frontend/node_modules/
+frontend/dist/
+notes/
+thoughts/
+.gradio/
+.env
+.env.example
+.DS_Store

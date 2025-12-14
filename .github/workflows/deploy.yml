@@ -1,0 +1,48 @@
+name: Deploy TDF Risk Analyzer
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: [ self-hosted, gibsonlabs ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Write .env from GitHub Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}"
+
+          cat > .env << 'EOF'
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+
+          # Optional secrets (safe if unset)
+          if [ -n "${{ secrets.TDF_DECISION_MATRIX_PATH || '' }}" ]; then
+            echo "TDF_DECISION_MATRIX_PATH=${{ secrets.TDF_DECISION_MATRIX_PATH }}" >> .env
+          fi
+          if [ -n "${{ secrets.TDF_SHARED_FILES_DIR || '' }}" ]; then
+            echo "TDF_SHARED_FILES_DIR=${{ secrets.TDF_SHARED_FILES_DIR }}" >> .env
+          fi
+          if [ -n "${{ secrets.TDF_SHARED_EXTRACTED_TEXT_DIR || '' }}" ]; then
+            echo "TDF_SHARED_EXTRACTED_TEXT_DIR=${{ secrets.TDF_SHARED_EXTRACTED_TEXT_DIR }}" >> .env
+          fi
+
+      - name: Build & deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}"
+
+          # stop & remove any old containers (even if names changed)
+          docker compose down --remove-orphans
+          # rebuild and recreate everything
+          docker compose up -d --force-recreate --remove-orphans --build
+
