@@ -1,0 +1,21 @@
+services:
+  app:
+    container_name: tdf-risk-analyzer
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5003:8080"
+    env_file:
+      - .env
+    environment:
+      # Optional defaults (can be overridden in .env)
+      SESSION_TTL_MINUTES: "60"
+      TDF_REQUIRE_TEXTRACT: "1"
+    volumes:
+      # Optional: persist sessions across container restarts (comment out to keep ephemeral)
+      - ./deploy-data/tdf_sessions:/tmp/tdf_sessions
+      # Optional: share uploads/outputs in repo-style folders for debugging
+      - ./files:/app/files
+      - ./extracted_text:/app/extracted_text
+    restart: unless-stopped
