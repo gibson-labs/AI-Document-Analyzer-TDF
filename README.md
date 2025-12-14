@@ -5,7 +5,7 @@ Primary UX: React web app that lets you upload documents, run FedEx/Weighted/Mem
 ### Prereqs
 - Python 3.10+
 - Node 18+ (for the React frontend)
-- `OPENAI_API_KEY` set (required for embeddings + LLM calls) 
+- `OPENAI_API_KEY` set (required for embeddings + LLM calls)  
 - AWS Textract env vars set (required for document extraction in the web app):
   - `AWS_REGION`
   - `AWS_ACCESS_KEY_ID`
