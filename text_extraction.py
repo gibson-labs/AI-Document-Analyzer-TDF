@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
@@ -21,6 +22,11 @@ try:
     from pypdf import PdfReader
 except ImportError:
     PdfReader = None  # type: ignore
+
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    convert_from_path = None  # type: ignore
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -45,6 +51,9 @@ def _build_textract_client():
 
     try:
         session = boto3.Session(**session_kwargs)
+        creds = session.get_credentials()
+        if creds is None:
+            return None
         return session.client("textract")
     except Exception as exc:  # pragma: no cover - defensive
         print(f"Failed to initialize Textract client: {exc}")
@@ -58,7 +67,7 @@ textract_client = _build_textract_client()
 def extract_with_textract(file_bytes: bytes, source_name: str) -> str:
     """Call Textract detect_document_text on provided bytes and return concatenated lines."""
     if not textract_client:
-        raise RuntimeError("Textract client is not available (check AWS credentials/region).")
+        raise RuntimeError("AWS Textract is not configured (check AWS credentials/region).")
 
     try:
         response = textract_client.detect_document_text(Document={"Bytes": file_bytes})
@@ -73,12 +82,34 @@ def extract_with_textract(file_bytes: bytes, source_name: str) -> str:
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract text from a PDF using Textract; fall back to PyPDF if Textract fails."""
+    """Extract text from a PDF using Textract on per-page images.
+
+    Note: Textract's synchronous `DetectDocumentText` does not accept PDF bytes directly.
+    We convert each page to an image locally and send images to Textract.
+    """
+    require_textract = os.getenv("TDF_REQUIRE_TEXTRACT", "1").strip().lower() not in {"0", "false", "no"}
+    if convert_from_path is None:
+        if require_textract:
+            raise RuntimeError("pdf2image is not installed; cannot run Textract PDF extraction.")
+        return ""
+
     try:
-        pdf_bytes = path.read_bytes()
-        return extract_with_textract(pdf_bytes, path.name)
+        # dpi=200 is a balance between quality and payload size.
+        pages = convert_from_path(str(path), dpi=200)
+        if not pages:
+            return ""
+        lines: list[str] = []
+        for i, page in enumerate(pages, start=1):
+            buf = io.BytesIO()
+            page.save(buf, format="PNG")
+            page_text = extract_with_textract(buf.getvalue(), f"{path.name} (page {i})")
+            if page_text.strip():
+                lines.append(page_text.strip())
+        return "\n\n".join(lines)
     except Exception as exc:
-        print(f"  Textract failed for {path.name}: {exc}")
+        if require_textract:
+            raise
+        print(f"  Textract PDF extraction failed for {path.name}: {exc}")
 
     if PdfReader is None:
         print("  PyPDF is not installed; skipping PDF fallback.")
@@ -104,7 +135,10 @@ def extract_xlsx_text(path: Path) -> str:
         rendered = []
         for sheet_name, df in sheets.items():
             rendered.append(f"# Sheet: {sheet_name}")
-            rendered.append(df.to_markdown(index=False))
+            try:
+                rendered.append(df.to_markdown(index=False))
+            except Exception:
+                rendered.append(df.to_csv(index=False))
         return "\n\n".join(rendered)
     except Exception as exc:
         print(f"  Unable to read Excel {path.name}: {exc}")
@@ -113,10 +147,13 @@ def extract_xlsx_text(path: Path) -> str:
 
 def extract_image_text(path: Path) -> str:
     """Extract text from an image using Textract."""
+    require_textract = os.getenv("TDF_REQUIRE_TEXTRACT", "1").strip().lower() not in {"0", "false", "no"}
     try:
         img_bytes = path.read_bytes()
         return extract_with_textract(img_bytes, path.name)
     except Exception as exc:
+        if require_textract:
+            raise
         print(f"  Textract failed for {path.name}: {exc}")
         return ""
 

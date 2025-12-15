@@ -1,60 +1,112 @@
-## TDF Risk Analysis (LangChain + OpenAI)
+## TDF Risk Analyzer (React UI + FastAPI wrapper) 
 
-This tool ingests PDFs, images, and spreadsheets in `documents/`, builds a vector index, and generates a credit risk memo with score and approve/decline recommendation.
+Primary UX: React web app that lets you upload documents, run FedEx/Weighted/Memo analysis, chat with RAG, and download the generated report as Markdown.
 
-### Setup
+### Prereqs
+- Python 3.10+
+- Node 18+ (for the React frontend)
+- `OPENAI_API_KEY` set (required for embeddings + LLM calls) 
+- AWS Textract env vars set (required for document extraction in the web app):
+  - `AWS_REGION`
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
 
-1. Create a virtual environment (recommended) and install deps from project root:
-   
-   ```bash
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
+### Run (Docker, recommended)
 
-2. Add your OpenAI API key to a `.env` file at the project root (or export it):
-   
-   ```bash
-   # .env (place in the project root)
-   OPENAI_API_KEY=YOUR_KEY
-   ```
-
-   Or export directly:
-   ```bash
-   export OPENAI_API_KEY=YOUR_KEY
-   ```
-
-### Run
-
-From the project root:
+Docker builds install dependencies from `requirements.docker.txt` (kept smaller and more stable for container builds).
 
 ```bash
-python TDF_risk_analysis/file.py \
-  --docs_dir "TDF_risk_analysis/documents" \
-  --persist_dir "TDF_risk_analysis/chroma" \
-  --company "Target Company" \
-  --model gpt-4o-mini \
-  --rebuild_index
+docker build -t tdf-risk-analyzer .
+docker run --rm -p 5003:8080 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e AWS_REGION="$AWS_REGION" \
+  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+  tdf-risk-analyzer
 ```
 
-Flags:
-- `--docs_dir`: directory containing PDFs, JPG/PNG, and XLSX/XLS files.
-- `--persist_dir`: directory where Chroma DB persists.
-- `--company`: name used in the analysis prompt.
-- `--model`: OpenAI chat model (e.g., `gpt-4o-mini`, `gpt-4o`, `gpt-4.1-mini`).
-- `--rebuild_index`: clear and rebuild the vector index.
+Alternative (recommended): `--env-file` to avoid exporting in your shell:
+```bash
+docker run --rm -p 5003:8080 --env-file .env tdf-risk-analyzer
+```
 
-#### Decision Matrix Weighting
+### Deploy (GitHub Actions + self-hosted runner)
 
-Provide your decision matrix Excel path via `--decision_matrix` (defaults to `documents/Decision Matrix's.xlsx`). The tool auto-detects the criterion and weight columns, normalizes weights, asks the model for per-criterion scores (1–5) with citations, and computes a weighted score and recommendation. If the matrix is missing, it falls back to a generic memo.
+This repo includes `.github/workflows/deploy.yml` which deploys via `docker compose` on a self-hosted runner.
 
-### Notes
+Required GitHub Secrets:
+- `OPENAI_API_KEY`
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
 
-- Supported types: `.pdf`, `.jpg`, `.jpeg`, `.png`, `.xlsx`, `.xls`.
-- For images and complex PDFs, `unstructured` with OCR backends will be used if available.
-- Output prints to terminal. Redirect to a file if desired:
+Optional GitHub Secrets:
+- `TDF_DECISION_MATRIX_PATH` (e.g. `/app/files/Decision Matrix's.xlsx`)
+- `TDF_SHARED_FILES_DIR` (e.g. `/app/files`)
+- `TDF_SHARED_EXTRACTED_TEXT_DIR` (e.g. `/app/extracted_text`)
 
-  ```bash
-  python TDF_risk_analysis/file.py > risk_report.txt
-  ```
+The workflow writes a local `.env` file on the runner and runs `docker compose up -d --build`.
+You can inspect the runtime config template in `.env.example`.
 
+Open `http://localhost:5003`.
 
+Optional: provide a decision matrix for Weighted mode (and FedEx criteria references) by mounting a local file and setting `TDF_DECISION_MATRIX_PATH`:
+
+```bash
+docker run --rm -p 5003:8080 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e TDF_DECISION_MATRIX_PATH="/app/files/Decision Matrix's.xlsx" \
+  -v "$(pwd)/files:/app/files" \
+  tdf-risk-analyzer
+```
+
+Optional (team compatibility): also write uploaded docs and extracted text into repo-style folders:
+- Upload mirror: `TDF_SHARED_FILES_DIR=/app/files`
+- Extract mirror: `TDF_SHARED_EXTRACTED_TEXT_DIR=/app/extracted_text`
+
+### Run (Local dev, no Docker)
+
+Terminal 1 (API):
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export OPENAI_API_KEY="YOUR_KEY"
+export AWS_REGION="us-west-2"
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+python3 -m uvicorn server:app --reload --port 8000
+```
+
+Terminal 2 (React):
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` (Vite proxies `/api/*` → `http://localhost:8000`).
+
+### CLI (still supported)
+
+From the project root:
+```bash
+python3 file.py --mode fedex --docs_dir files --persist_dir chroma --company "Acme" --rebuild_index
+python3 file.py --mode weighted --docs_dir files --persist_dir chroma --company "Acme"
+python3 file.py --mode memo --docs_dir files --persist_dir chroma --company "Acme"
+```
+
+### Gradio UI (optional)
+
+```bash
+python3 app.py
+```
+
+### API Environment Variables
+
+- `OPENAI_API_KEY`: required
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: required for Textract extraction
+- `TDF_DECISION_MATRIX_PATH`: path to a server-side `.xlsx` decision matrix (required for Weighted mode)
+- `TDF_SESSIONS_ROOT`: where session workspaces live (default `/tmp/tdf_sessions`)
+- `SESSION_TTL_MINUTES`: auto-delete sessions idle longer than this (default `60`)
+- `MAX_UPLOAD_MB`: per-request upload limit (default `100`)
+- `TDF_CORS_ORIGINS`: dev CORS allowlist (default `http://localhost:5173,http://127.0.0.1:5173`)

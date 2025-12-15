@@ -1,3 +1,4 @@
+import argparse
 import base64
 import io
 import operator
@@ -40,10 +41,11 @@ class AgentState(TypedDict):
     """Global state of the graph."""
     # Input
     folder_path: str
-    
+    output_dir: NotRequired[Path]
+
     # Internal
     tasks: List[AnalysisTask]
-    
+
     # Output (Reducer)
     results: Annotated[List[dict], operator.add]
     grouped_results: NotRequired[Dict[str, List[dict]]]
@@ -202,7 +204,7 @@ def aggregator_node(state: AgentState):
     """Group results by document and persist them to per-file text outputs."""
     print("--- Aggregating Results ---")
     raw_results = state['results']
-    
+
     # Group by filename for cleaner output
     grouped = {}
     for item in raw_results:
@@ -210,12 +212,14 @@ def aggregator_node(state: AgentState):
         if fname not in grouped:
             grouped[fname] = []
         grouped[fname].append(item)
-    
+
     # Sort pages within files
     for fname in grouped:
         grouped[fname].sort(key=lambda x: x['page'])
 
-    written_files = write_grouped_results(grouped)
+    # Use custom output directory if provided in state
+    output_dir = state.get('output_dir', VISION_OUTPUT_DIR)
+    written_files = write_grouped_results(grouped, output_dir)
     return {"grouped_results": grouped, "written_files": written_files}
 
 # --- 4. Edge Logic ---
@@ -253,12 +257,32 @@ app = workflow.compile()
 # --- 6. Execution ---
 
 if __name__ == "__main__":
-    # Create a dummy folder for testing if needed
-    target_folder = "./files"
-    
+    parser = argparse.ArgumentParser(
+        description="Extract and analyze visual elements (charts, graphs, diagrams) from PDFs and images."
+    )
+    parser.add_argument(
+        "target_folder",
+        nargs="?",
+        default="./files",
+        help="Path to the folder containing PDF/image files to process (default: ./files)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=f"Directory to save extracted vision summaries (default: {VISION_OUTPUT_DIR})"
+    )
+
+    args = parser.parse_args()
+    target_folder = args.target_folder
+
     if os.path.exists(target_folder):
-        final_state = app.invoke({"folder_path": target_folder})
-        
+        # Prepare initial state
+        initial_state = {"folder_path": target_folder}
+        if args.output_dir:
+            initial_state["output_dir"] = Path(args.output_dir)
+
+        final_state = app.invoke(initial_state)
+
         # Display Results
         import json
         output = final_state.get("grouped_results", final_state.get("results", {}))
@@ -270,4 +294,5 @@ if __name__ == "__main__":
             for path in written_files:
                 print(f" - {path}")
     else:
-        print(f"Please create the folder '{target_folder}' and put some PDFs/Images in it.")
+        print(f"Error: Folder '{target_folder}' does not exist.")
+        print(f"Please create the folder and add some PDFs/Images, or specify a different path.")
