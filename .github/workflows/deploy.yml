@@ -54,5 +54,9 @@ jobs:
           set -euo pipefail
           cd "${{ github.workspace }}/app"
 
+          # One-time cleanup: older compose files used `container_name: tdf-risk-analyzer`
+          # which can conflict across compose project folders.
+          docker rm -f tdf-risk-analyzer >/dev/null 2>&1 || true
+
           docker compose down --remove-orphans
           docker compose up -d --force-recreate --remove-orphans --build
