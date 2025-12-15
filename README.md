@@ -1,4 +1,4 @@
-## TDF Risk Analyzer (React UI + FastAPI wrapper) 
+## TDF Risk Analyzer (React UI + FastAPI wrapper)  
 
 Primary UX: React web app that lets you upload documents, run FedEx/Weighted/Memo analysis, chat with RAG, and download the generated report as Markdown.
 
