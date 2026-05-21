@@ -1,5 +1,41 @@
 ## TDF Risk Analyzer (React UI + FastAPI wrapper)  
 
+# AI Loan Document Analyzer
+
+An AI-powered document analysis app built to help a loan company review complex borrower and business documents faster, more consistently, and with better visibility into risk.
+
+## Why This Was Built
+
+Loan review can be slow and manual, especially when analysts need to read through financial records, business documents, accident reports, operational data, and supporting files before making a decision. Important details can be buried across multiple PDFs, tables, and reports, which makes the process time-consuming and easy to overlook.
+
+This project was built to solve that problem by using AI to extract, summarize, and analyze key information from uploaded documents. Instead of forcing analysts to manually search through every file, the app helps surface the most relevant details, identify potential risk factors, and generate structured insights that support faster decision-making.
+
+## Business Problem
+
+Loan companies often need to evaluate applications using many different types of documents, including:
+
+- Financial statements
+- Credit or underwriting memos
+- Safety and accident reports
+- Operational reports
+- Supporting business documents
+- PDFs with tables, images, and unstructured text
+
+Reviewing these manually can create several problems:
+
+- Analysts spend hours reading through documents
+- Important risks can be missed
+- Different reviewers may evaluate the same file differently
+- Document-heavy applications slow down the approval process
+- It is difficult to quickly compare strengths, weaknesses, and risk signals
+
+## Solution
+
+This app uses AI-assisted document processing to help analysts move from raw documents to structured insights. It extracts text, analyzes relevant sections, summarizes findings, and helps produce a clearer view of the borrower’s financial and operational risk.
+
+The goal is not to replace human judgment, but to give analysts a faster and more organized way to review large amounts of information before making a decision.
+
+
 Primary UX: React web app that lets you upload documents, run FedEx/Weighted/Memo analysis, chat with RAG, and download the generated report as Markdown.
  asd
 ### Prereqs
